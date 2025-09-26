@@ -2,18 +2,19 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-from langchain.pydantic_v1 import Field
+from pydantic import Field
 from langchain.tools import BaseTool, tool, StructuredTool
 from data_loader import load_resume, write_cover_letter_to_doc
 from schemas import JobSearchInput
-from search import get_job_ids, fetch_all_jobs
-from utils import FireCrawlClient, SerperClient
+from utils import SerperClient,FireCrawlClient
+import json
 
 load_dotenv()
 
 
 # Job search tools
-def linkedin_job_search(
+
+def job_search(
     keywords: str,
     location_name: str = None,
     job_type: str = None,
@@ -24,20 +25,55 @@ def linkedin_job_search(
     distance=None,
 ) -> dict:  # type: ignore
     """
-    Search LinkedIn for job postings based on specified criteria. Returns detailed job listings.
+    Search for job postings based on specified criteria using Serper API. Returns detailed job listings.
     """
-    job_ids = get_job_ids(
-        keywords=keywords,
-        location_name=location_name,
-        employment_type=employment_type,
-        limit=limit,
-        job_type=job_type,
-        listed_at=listed_at,
-        experience=experience,
-        distance=distance,
-    )
-    job_desc = asyncio.run(fetch_all_jobs(job_ids))
-    return job_desc
+    try:
+        # 构造搜索查询
+        query = f"job {keywords}"
+        if location_name:
+            query += f" in {location_name}"
+        if job_type:
+            query += f" {job_type}"
+        if employment_type:
+            query += f" {employment_type}"
+        if experience:
+            query += f" {experience} experience"
+            
+        # 使用SerperClient进行搜索
+        client = SerperClient()
+        response = client.search(query, num_results=limit)
+        
+        # 解析搜索结果
+        jobs = []
+        items = response.get("items", [])
+        
+        for item in items:
+            title = item.get("title", "")
+            link = item.get("link", "")
+            snippet = item.get("snippet", "")
+            
+            # 提取公司名称（如果可能）
+            company_name = ""
+            if " at " in title:
+                parts = title.split(" at ")
+                if len(parts) >= 2:
+                    company_name = parts[-1]
+            
+            job_info = {
+                "job_title": title,
+                "company_name": company_name,
+                "job_location": location_name or "Not specified",
+                "job_desc_text": snippet,
+                "apply_link": link,
+                "time_posted": item.get("date", "Not specified"),
+            }
+            
+            jobs.append(job_info)
+            
+        return jobs
+    except Exception as e:
+        print(f"搜索职位时出错: {e}")
+        return {"error": f"搜索职位时出错: {str(e)}"}
 
 
 def get_job_search_tool():
@@ -47,38 +83,39 @@ def get_job_search_tool():
     StructuredTool: A structured tool for the JobPipeline function.
     """
     job_pipeline_tool = StructuredTool.from_function(
-        func=linkedin_job_search,
+        func=job_search,
         name="JobSearchTool",
-        description="Search LinkedIn for job postings based on specified criteria. Returns detailed job listings",
+        description="Search for job postings based on specified criteria using Serper API. Returns detailed job listings",
         args_schema=JobSearchInput,
     )
     return job_pipeline_tool
 
-
-# Resume Extraction Tool
 class ResumeExtractorTool(BaseTool):
-    """
-    Extract the content of a resume from a PDF file.
-    Returns:
-        dict: The extracted content of the resume.
-    """
-    name: str = "ResumeExtractor"
-    description: str = "Extract the content of uploaded resume from a PDF file."
-
-    def extract_resume(self) -> str:
-        """
-        Extract resume content from a PDF file.
-        Extract and structure job-relevant information from an uploaded CV.
-
-        Returns:
-        str: The content of the highlight skills, experience, and qualifications relevant to job applications, omitting personal information
-        """
-        text = load_resume("temp/resume.pdf")
-        return text
-
-    def _run(self) -> dict:
-        return self.extract_resume()
-
+    name: str = "resume_extractor"
+    description: str = "提取已上传的简历内容进行分析。不需要输入参数。"
+    
+    def _run(self, query: str = "") -> str:
+        """提取简历内容"""
+        try:
+            resume_path = "temp/resume.pdf"
+            
+            if os.path.exists(resume_path):
+                file_size = os.path.getsize(resume_path)
+                if file_size == 0:
+                    return "❌ 简历文件为空"
+                resume_content = load_resume(resume_path)
+                if resume_content and len(resume_content.strip()) > 10:
+                    return resume_content
+                else:
+                    return "❌ 简历文件内容为空或读取失败"
+            else:
+                return "❌ 未找到简历文件"
+                    
+        except Exception as e:
+            return f"❌ 读取简历时出错: {str(e)}"
+    
+    async def _arun(self, query: str = "") -> str:
+        return self._run(query)
 
 # Cover Letter Generation Tool
 @tool

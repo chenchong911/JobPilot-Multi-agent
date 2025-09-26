@@ -1,13 +1,48 @@
-#define LLMs
+from langchain_community.chat_models import ChatTongyi
 from langchain_openai import ChatOpenAI
-from langchain_groq import ChatGroq
-import os 
+import os
 
-def load_llm(llm_name): #gpt-4-0125-preview  gpt-4-turbo-2024-04-09
-    if llm_name=='openai':
-        llm = ChatOpenAI(model_name="gpt-4o-mini", openai_api_key=os.environ["OPENAI_API_KEY"], temperature = 0.1, streaming=True) # type: ignore
-    if llm_name=='groq':
-        llm = ChatGroq(temperature=0.2, groq_api_key=os.environ["GROQ_API_KEY"], model_name="llama3-70b-8192" )  # type: ignore #temperature = 0.1 mixtral-8x7b-32768 llama3-70b-8192
-    if llm_name=="llama3":
-        llm = ChatOpenAI(model="llama3", base_url="http://localhost:11434/v1", temperature = 0.0)
-    return llm
+def get_llm(provider="tongyi", model="qwen-turbo", **kwargs):
+    """
+    Returns an instance of the specified chat model provider with tool support.
+    """
+    #print(f"创建 LLM: provider={provider}, model={model}")
+    
+    if provider == "tongyi":
+        api_key = kwargs.get("api_key") or os.environ.get("DASHSCOPE_API_KEY")
+        if not api_key:
+            raise ValueError("DASHSCOPE_API_KEY 未设置")
+        
+        # 通义千问模型支持工具调用
+        llm = ChatTongyi(
+            model_name=model,
+            dashscope_api_key=api_key,
+            temperature=kwargs.get("temperature", 0.3),
+            streaming=kwargs.get("streaming", False),
+        )
+        
+        # 验证模型是否支持工具调用
+        # if hasattr(llm, 'bind_tools'):
+        #     print(f"✅ {model} 支持工具调用")
+        # else:
+        #     print(f"⚠️ {model} 可能不支持工具调用，将使用基础模式")
+            
+        return llm
+    
+    elif provider == "openai":
+        # 备用 OpenAI 模型
+        api_key = kwargs.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        return ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            temperature=kwargs.get("temperature", 0.3),
+            streaming=kwargs.get("streaming", False),
+        )
+    
+    else:
+        # 默认返回通义千问
+        return ChatTongyi(
+            model_name="qwen-turbo",
+            dashscope_api_key=kwargs.get("api_key"),
+            temperature=kwargs.get("temperature", 0.3),
+        )

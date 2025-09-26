@@ -1,12 +1,10 @@
 import aiohttp
 import os
-import urllib
 import asyncio
 import requests
 from typing import List, Literal, Union, Optional
-from asgiref.sync import sync_to_async
-from linkedin_api import Linkedin
 from bs4 import BeautifulSoup
+from utils import SerperClient
 
 employment_type_mapping = {
     "full-time": "F",
@@ -34,100 +32,56 @@ job_type_mapping = {
 }
 
 
-def build_linkedin_job_url(
-    keywords,
-    location=None,
-    employment_type=None,
-    experience_level=None,
-    job_type=None,
-    start=10,
-):
-    base_url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search/"
-
-    # Prepare query parameters
-    query_params = {
-        "keywords": keywords,
-    }
-
-    if location:
-        query_params["location"] = location
-
-    if employment_type:
-        if isinstance(employment_type, str):
-            employment_type = [employment_type]
-        employment_type = ",".join(employment_type)
-        query_params["f_WT"] = employment_type
-
-    if experience_level:
-        if isinstance(experience_level, str):
-            experience_level = [experience_level]
-        experience_level = ",".join(experience_level)
-        query_params["f_E"] = experience_level
-
-    if job_type:
-        if isinstance(job_type, str):
-            job_type = [job_type]
-        job_type = ",".join(job_type)
-        query_params["f_WT"] = job_type
-
-    # Build the complete URL
-    query_string = urllib.parse.urlencode(query_params)
-    full_url = f"{base_url}?{query_string}&sortBy=R"
-
-    return full_url
 
 
-def validate_job_search_params(agent_input: Union[str, list], value_dict_mapping: dict):
-
-    if isinstance(agent_input, list):
-        for i, input_str in enumerate(agent_input.copy()):
-            if not value_dict_mapping.get(input_str):
-                agent_input.pop(i)
-    elif isinstance(agent_input, str) and not value_dict_mapping.get(agent_input):
-        agent_input = None
-    else:
-        agent_input = None
-
-    return agent_input
-
-
-def get_job_ids_from_linkedin_api(
-    keywords: str,
-    location_name: str,
-    employment_type=None,
-    limit: Optional[int] = 5,
-    job_type=None,
-    experience=None,
-    listed_at=86400,
-    distance=None,
-):
+def search_jobs_with_serper(keywords: str, location_name: str = None, limit: int = 10):
+    """
+    使用Serper API搜索职位信息
+    """
     try:
-        job_type = validate_job_search_params(job_type, job_type_mapping)
-        employment_type = validate_job_search_params(
-            employment_type, employment_type_mapping
-        )
-        experience_level = validate_job_search_params(
-            experience, experience_type_mapping
-        )
-        api = Linkedin(os.getenv("LINKEDIN_EMAIL"), os.getenv("LINKEDIN_PASS"))
-        job_postings = api.search_jobs(
-            keywords=keywords,
-            job_type=employment_type,
-            location_name=location_name,
-            remote=job_type,
-            limit=limit,
-            experience=experience_level,
-            listed_at=listed_at,
-            distance=distance,
-        )
-        # Extracting just the part after "jobPosting:" from the trackingUrn and the title using list comprehension
-        job_ids = [job["trackingUrn"].split("jobPosting:")[1] for job in job_postings]
-        return job_ids
+        # 构造搜索查询
+        query = f"job {keywords}"
+        if location_name:
+            query += f" in {location_name}"
+            
+        # 使用SerperClient进行搜索
+        client = SerperClient()
+        response = client.search(query, num_results=limit)
+        
+        # 解析搜索结果
+        jobs = []
+        items = response.get("items", [])
+        
+        for item in items:
+            # 尝试从搜索结果中提取职位相关信息
+            title = item.get("title", "")
+            link = item.get("link", "")
+            snippet = item.get("snippet", "")
+            
+            # 简单的职位信息提取逻辑
+            job_info = {
+                "job_title": title,
+                "company_name": "",  # 需要从snippet或其他地方提取
+                "job_location": location_name or "",
+                "job_desc_text": snippet,
+                "apply_link": link,
+                "time_posted": "",  # 搜索结果中可能没有此信息
+                "num_applicants": "",  # 搜索结果中可能没有此信息
+            }
+            
+            # 尝试从标题或片段中提取公司名称
+            if " at " in title:
+                # 假设标题格式为 "Job Title at Company Name"
+                parts = title.split(" at ")
+                if len(parts) >= 2:
+                    job_info["company_name"] = parts[-1]
+                    
+            jobs.append(job_info)
+            
+        return jobs
     except Exception as e:
-        print(f"Error in fetching job ids from LinkedIn API -> {e}")
-
-    return []
-
+        print(f"使用Serper搜索职位时出错: {e}")
+        return []
 
 def get_job_ids(
     keywords: str,
@@ -162,49 +116,14 @@ def get_job_ids(
     listed_at: Optional[Union[int, str]] = 86400,
     distance=None,
 ):
-    if os.environ.get("LINKEDIN_SEARCH") == "linkedin_api":
-        return get_job_ids_from_linkedin_api(
-            keywords=keywords,
-            location_name=location_name,
-            employment_type=employment_type,
-            limit=limit,
-            job_type=job_type,
-            experience=experience,
-            listed_at=listed_at,
-            distance=distance,
-        )
-
+    # 直接使用Serper API进行职位搜索
     try:
-        # Construct the URL for LinkedIn job search
-        job_url = build_linkedin_job_url(
-            keywords=keywords,
-            location=location_name,
-            employment_type=employment_type,
-            experience_level=experience,
-            job_type=job_type,
-        )
-
-        # Send a GET request to the URL and store the response
-        response = requests.get(
-            job_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"}
-        )
-
-        # Get the HTML, parse the response and find all list items(jobs postings)
-        list_data = response.text
-        list_soup = BeautifulSoup(list_data, "html.parser")
-        page_jobs = list_soup.find_all("li")
-
-        # Create an empty list to store the job postings
-        job_ids = []
-        # Itetrate through job postings to find job ids
-        for job in page_jobs:
-            base_card_div = job.find("div", {"class": "base-card"})
-            job_id = base_card_div.get("data-entity-urn").split(":")[3]
-            job_ids.append(job_id)
-        return job_ids
+        jobs = search_jobs_with_serper(keywords, location_name, limit)
+        # 为兼容现有代码，返回空列表作为job_ids（因为Serper直接返回详细信息）
+        return []
     except Exception as e:
-        print(f"Error in fetching job ids from LinkedIn -> {e}")
-    return []
+        print(f"搜索职位时出错: {e}")
+        return []
 
 
 async def fetch_job_details(session, job_id):
@@ -332,24 +251,6 @@ async def get_job_details_from_linkedin_api(job_id):
 
 
 async def fetch_all_jobs(job_ids, batch_size=5):
-    results = []
-
-    try:
-        if os.environ.get("LINKEDIN_SEARCH") == "linkedin_api":
-            return await asyncio.gather(
-                *[get_job_details_from_linkedin_api(job_id) for job_id in job_ids]
-            )
-
-        async with aiohttp.ClientSession() as session:
-            tasks = []
-            for job_id in job_ids:
-                task = asyncio.create_task(fetch_job_details(session, job_id))
-                tasks.append(task)
-
-            # Await the completion of all tasks
-            results = await asyncio.gather(*tasks)
-            return results
-    except Exception as exc:
-        print(f"Error in fetching job details -> {exc}")
-
-    return results
+    # 由于我们直接使用Serper获取职位详情，这里直接返回空列表
+    # 实际的职位信息将在工具调用中直接返回
+    return []

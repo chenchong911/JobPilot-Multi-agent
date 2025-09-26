@@ -1,41 +1,40 @@
 from docx import Document
 from langchain_community.document_loaders import PyMuPDFLoader
-
+import os
 
 def load_resume(file_path):
     """
-    Load the content of a CV file.
-
-    Parameters:
-    file (str): The path to the CV file.
-
-    Returns:
-    str: The content of the CV file.
+    简单的简历加载函数
     """
-    loader = PyMuPDFLoader(file_path)
-    pages = loader.load()
-    page_content = ""
-    for page in pages:
-        page_content += page.page_content
-    return page_content
-
+    try:
+        if not os.path.exists(file_path):
+            return f"文件不存在: {file_path}"
+        
+        file_size = os.path.getsize(file_path)
+        if file_size == 0:
+            return "PDF 文件为空"
+        
+        # 使用 PyMuPDFLoader
+        loader = PyMuPDFLoader(file_path)
+        pages = loader.load()
+        
+        content = ""
+        for page in pages:
+            content += page.page_content + "\n"
+        
+        if content.strip():
+            return content.strip()
+        else:
+            return "PDF 文件内容为空"
+        
+    except Exception as e:
+        return f"读取简历文件时出错: {str(e)}"
 
 def write_cover_letter_to_doc(text, filename="temp/cover_letter.docx"):
-    """
-    Writes the given text as a cover letter to a Word document.
-
-    Parameters:
-    text (str): The text content of the cover letter.
-    filename (str): The filename and path where the document will be saved. Default is "temp/cover_letter.docx".
-
-    Returns:
-    str: The filename and path of the saved document.
-    """
     doc = Document()
     paragraphs = text.split("\n")
-    # Add each paragraph to the document
     for para in paragraphs:
-        doc.add_paragraph(para)
-    # Save the document to the specified file
+        if para.strip():
+            doc.add_paragraph(para.strip())
     doc.save(filename)
     return filename
